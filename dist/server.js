@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -7,6 +40,8 @@ const express_1 = __importDefault(require("express"));
 const helmet_1 = __importDefault(require("helmet"));
 const cors_1 = __importDefault(require("cors"));
 const dotenv_1 = require("dotenv");
+// Import database utilities
+const db_1 = require("./utils/db");
 // Import routes
 const auth_routes_1 = __importDefault(require("./routes/auth.routes"));
 const materials_routes_1 = __importDefault(require("./routes/materials.routes"));
@@ -19,18 +54,18 @@ const upload_middleware_1 = require("./middleware/upload.middleware");
 // Load environment variables
 (0, dotenv_1.config)();
 const app = (0, express_1.default)();
-const PORT = process.env.PORT || 3000;
+const PORT = parseInt(process.env.PORT || '3000', 10);
+// Initialize database connection pool
+(0, db_1.initializePool)();
+// Ensure uploads directory exists
+(0, db_1.ensureUploadsDir)();
 // Security middleware
 app.use((0, helmet_1.default)({
     crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
-// CORS configuration
-const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || [
-    'http://localhost:8081',
-    'exp://192.168.1.100:8081'
-];
+// CORS configuration - Allow all origins for Railway deployment
 app.use((0, cors_1.default)({
-    origin: allowedOrigins,
+    origin: "*",
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
@@ -39,12 +74,26 @@ app.use((0, cors_1.default)({
 app.use(express_1.default.json({ limit: '10mb' }));
 app.use(express_1.default.urlencoded({ extended: true, limit: '10mb' }));
 // Health check endpoint
-app.get('/health', (req, res) => {
-    res.json({
-        status: 'OK',
-        timestamp: new Date().toISOString(),
-        service: 'Material Management API'
-    });
+app.get('/health', async (req, res) => {
+    try {
+        const dbConnected = await (0, db_1.testConnection)();
+        res.status(200).json({
+            status: 'healthy',
+            timestamp: new Date().toISOString(),
+            service: 'Material Management API',
+            database: dbConnected ? 'connected' : 'disconnected',
+            environment: process.env.NODE_ENV || 'development'
+        });
+    }
+    catch (error) {
+        res.status(503).json({
+            status: 'unhealthy',
+            timestamp: new Date().toISOString(),
+            service: 'Material Management API',
+            database: 'disconnected',
+            error: 'Database connection failed'
+        });
+    }
 });
 // API routes
 app.use('/api/auth', auth_routes_1.default);
@@ -126,12 +175,47 @@ app.use((error, req, res, next) => {
         message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
     });
 });
-// Start server
-app.listen(PORT, () => {
-    console.log(`🚀 Material Management API server running on port ${PORT}`);
-    console.log(`📚 API Documentation: http://localhost:${PORT}/api`);
-    console.log(`🏥 Health Check: http://localhost:${PORT}/health`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+// Initialize database and start server
+const startServer = async () => {
+    try {
+        console.log('🔄 Starting Material Management API...');
+        // Test database connection
+        const dbConnected = await (0, db_1.testConnection)();
+        if (!dbConnected) {
+            console.error('❌ Failed to connect to database. Exiting...');
+            process.exit(1);
+        }
+        // Initialize database schema
+        await (0, db_1.initializeDatabase)();
+        // Start server on 0.0.0.0 for Railway
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log(`🚀 Material Management API server running on port ${PORT}`);
+            console.log(`📚 API Documentation: http://localhost:${PORT}/api`);
+            console.log(`🏥 Health Check: http://localhost:${PORT}/health`);
+            console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+            console.log(`🗄️  Database: PostgreSQL connected`);
+            console.log(`📁 Uploads Directory: ${process.env.UPLOAD_DIR || './uploads'}`);
+        });
+    }
+    catch (error) {
+        console.error('❌ Failed to start server:', error);
+        process.exit(1);
+    }
+};
+// Handle graceful shutdown
+process.on('SIGTERM', async () => {
+    console.log('🔄 SIGTERM received, shutting down gracefully...');
+    const { DatabaseHelper } = await Promise.resolve().then(() => __importStar(require('./utils/db')));
+    await DatabaseHelper.close();
+    process.exit(0);
 });
+process.on('SIGINT', async () => {
+    console.log('🔄 SIGINT received, shutting down gracefully...');
+    const { DatabaseHelper } = await Promise.resolve().then(() => __importStar(require('./utils/db')));
+    await DatabaseHelper.close();
+    process.exit(0);
+});
+// Start the server
+startServer();
 exports.default = app;
 //# sourceMappingURL=server.js.map

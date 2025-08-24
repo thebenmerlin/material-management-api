@@ -1,92 +1,177 @@
-import Database from 'better-sqlite3';
-import path from 'path';
+// src/utils/db.ts
+import { Pool, PoolClient, QueryResult } from 'pg';
 import fs from 'fs';
 
-const DB_PATH = process.env.DB_PATH || './db/material_management.db';
+// Database connection pool
+let pool: Pool;
 
-// Ensure database directory exists
-const dbDir = path.dirname(DB_PATH);
-if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
-}
+export const initializePool = (): Pool => {
+  if (!pool) {
+    const connectionString = process.env.DATABASE_URL;
+    
+    if (!connectionString) {
+      console.error('❌ DATABASE_URL environment variable is required');
+      process.exit(1);
+    }
 
-// Initialize SQLite database
-// Explicitly typing as "any" to avoid BetterSqlite3.Database export error
-const db: any = new Database(DB_PATH);
+    // Configure SSL for Railway
+    const sslConfig = process.env.RAILWAY_STATIC_URL ? {
+      ssl: {
+        rejectUnauthorized: false
+      }
+    } : {};
 
-// Enable foreign keys
-db.pragma('foreign_keys = ON');
+    pool = new Pool({
+      connectionString,
+      ...sslConfig,
+      max: 20,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 2000,
+    });
 
-export default db;
+    // Handle pool errors
+    pool.on('error', (err) => {
+      console.error('❌ Unexpected error on idle client', err);
+      process.exit(-1);
+    });
 
-// Database helper functions
+    console.log('✅ PostgreSQL connection pool initialized');
+  }
+
+  return pool;
+};
+
+// Get the pool instance
+export const getPool = (): Pool => {
+  if (!pool) {
+    return initializePool();
+  }
+  return pool;
+};
+
+// Database helper function for queries
+export const dbQuery = async (text: string, params: any[] = []): Promise<QueryResult> => {
+  const pool = getPool();
+  const start = Date.now();
+  
+  try {
+    const result = await pool.query(text, params);
+    const duration = Date.now() - start;
+    
+    if (process.env.NODE_ENV === 'development') {
+      console.log('🔍 Query executed:', { text, duration, rows: result.rowCount });
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('❌ Database query error:', error);
+    console.error('Query:', text);
+    console.error('Params:', params);
+    throw error;
+  }
+};
+
+// Database helper class with async methods
 export class DatabaseHelper {
-    static executeQuery(query: string, params: any[] = []): any {
-        try {
-            const stmt = db.prepare(query);
-            return stmt.all(params);
-        } catch (error) {
-            console.error('Database query error:', error);
-            throw error;
-        }
-    }
+  static async executeQuery(query: string, params: any[] = []): Promise<any[]> {
+    const result = await dbQuery(query, params);
+    return result.rows;
+  }
 
-    static executeInsert(query: string, params: any[] = []): any {
-        try {
-            const stmt = db.prepare(query);
-            return stmt.run(params);
-        } catch (error) {
-            console.error('Database insert error:', error);
-            throw error;
-        }
-    }
+  static async executeInsert(query: string, params: any[] = []): Promise<any> {
+    const result = await dbQuery(query, params);
+    return {
+      lastID: result.rows[0]?.id || null,
+      changes: result.rowCount || 0,
+      insertId: result.rows[0]?.id || null
+    };
+  }
 
-    static executeUpdate(query: string, params: any[] = []): any {
-        try {
-            const stmt = db.prepare(query);
-            return stmt.run(params);
-        } catch (error) {
-            console.error('Database update error:', error);
-            throw error;
-        }
-    }
+  static async executeUpdate(query: string, params: any[] = []): Promise<any> {
+    const result = await dbQuery(query, params);
+    return {
+      changes: result.rowCount || 0
+    };
+  }
 
-    static getOne(query: string, params: any[] = []): any {
-        try {
-            const stmt = db.prepare(query);
-            return stmt.get(params);
-        } catch (error) {
-            console.error('Database get one error:', error);
-            throw error;
-        }
-    }
+  static async getOne(query: string, params: any[] = []): Promise<any> {
+    const result = await dbQuery(query, params);
+    return result.rows[0] || null;
+  }
 
-    static transaction(callback: () => void): void {
-        const transaction = db.transaction(callback);
-        transaction();
+  static async transaction(callback: (client: PoolClient) => Promise<void>): Promise<void> {
+    const pool = getPool();
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      await callback(client);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
+  }
 
-    static close(): void {
-        db.close();
+  static async close(): Promise<void> {
+    if (pool) {
+      await pool.end();
+      console.log('✅ Database connection pool closed');
     }
+  }
 }
 
-// Initialize database with schema
-export const initializeDatabase = (): void => {
-    try {
-        const schemaPath = path.join(__dirname, '../../db/schema.sql');
-        const schema = fs.readFileSync(schemaPath, 'utf8');
-        
-        // Split schema by semicolons and execute each statement
-        const statements = schema.split(';').filter(stmt => stmt.trim().length > 0);
-        
-        statements.forEach(statement => {
-            db.exec(statement);
-        });
+// Test database connection
+export const testConnection = async (): Promise<boolean> => {
+  try {
+    const result = await dbQuery('SELECT NOW() as current_time');
+    console.log('✅ Database connection successful:', result.rows[0].current_time);
+    return true;
+  } catch (error) {
+    console.error('❌ Database connection failed:', error);
+    return false;
+  }
+};
 
-        console.log('Database initialized successfully');
-    } catch (error) {
-        console.error('Error initializing database:', error);
-        throw error;
+// Initialize database schema
+export const initializeDatabase = async (): Promise<void> => {
+  try {
+    const schemaPath = require('path').join(__dirname, '../../db/schema.sql');
+    
+    if (!fs.existsSync(schemaPath)) {
+      console.error('❌ Schema file not found:', schemaPath);
+      throw new Error('Schema file not found');
     }
+
+    const schema = fs.readFileSync(schemaPath, 'utf8');
+
+    // Split schema by semicolons and execute each statement
+    const statements = schema
+      .split(';')
+      .map(stmt => stmt.trim())
+      .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'));
+
+    for (const statement of statements) {
+      if (statement.trim()) {
+        await dbQuery(statement);
+      }
+    }
+
+    console.log('✅ Database schema initialized successfully');
+  } catch (error) {
+    console.error('❌ Error initializing database schema:', error);
+    throw error;
+  }
+};
+
+// Ensure uploads directory exists
+export const ensureUploadsDir = (): void => {
+  const uploadDir = process.env.UPLOAD_DIR || './uploads';
+  
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+    console.log('✅ Uploads directory created:', uploadDir);
+  }
 };

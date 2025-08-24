@@ -17,11 +17,11 @@ export class ReceiptsController {
             }
 
             // Check if order exists
-            const order = DatabaseHelper.getOne(
+            const order = await DatabaseHelper.getOne(
                 `SELECT o.*, i.site_id 
                  FROM orders o 
                  JOIN indents i ON o.indent_id = i.id 
-                 WHERE o.id = ?`,
+                 WHERE o.id = $1`,
                 [order_id]
             );
 
@@ -39,25 +39,25 @@ export class ReceiptsController {
             // Generate receipt number
             const receiptNumber = `REC-${order_id}-${Date.now()}`;
 
-            DatabaseHelper.transaction(() => {
+            await DatabaseHelper.transaction(async (client) => {
                 // Insert receipt
-                const receiptResult = DatabaseHelper.executeInsert(
+                const receiptResult = await client.query(
                     `INSERT INTO receipts (order_id, receipt_number, received_by, received_date, 
                                          delivery_challan_number, is_partial, notes) 
-                     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
                     [order_id, receiptNumber, user.id, received_date, 
-                     delivery_challan_number, is_partial ? 1 : 0, notes]
+                     delivery_challan_number, is_partial, notes]
                 );
 
-                const receiptId = receiptResult.lastInsertRowid;
+                const receiptId = receiptResult.rows[0].id;
 
                 // Insert receipt items
                 for (const item of items) {
-                    DatabaseHelper.executeInsert(
+                    await client.query(
                         `INSERT INTO receipt_items (receipt_id, order_item_id, received_quantity, 
                                                   damaged_quantity, returned_quantity, damage_description, 
                                                   return_reason, condition_notes) 
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
                         [
                             receiptId,
                             item.order_item_id,
@@ -72,15 +72,16 @@ export class ReceiptsController {
                 }
 
                 // Insert receipt images
-                files.forEach((file, index) => {
+                for (let index = 0; index < files.length; index++) {
+                    const file = files[index];
                     const imageType = req.body[`image_type_${index}`] || 'general';
                     const description = req.body[`image_description_${index}`] || '';
 
-                    DatabaseHelper.executeInsert(
-                        'INSERT INTO receipt_images (receipt_id, image_path, image_type, description) VALUES (?, ?, ?, ?)',
+                    await client.query(
+                        'INSERT INTO receipt_images (receipt_id, image_path, image_type, description) VALUES ($1, $2, $3, $4)',
                         [receiptId, file.path, imageType, description]
                     );
-                });
+                }
 
                 // Update order status
                 const allItemsReceived = items.every((item: any) => 
@@ -88,15 +89,15 @@ export class ReceiptsController {
                 );
 
                 const newOrderStatus = allItemsReceived ? 'Completed' : 'Partially Received';
-                DatabaseHelper.executeUpdate(
-                    'UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                await client.query(
+                    'UPDATE orders SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
                     [newOrderStatus, order_id]
                 );
 
                 // Update indent status if order is completed
                 if (newOrderStatus === 'Completed') {
-                    DatabaseHelper.executeUpdate(
-                        'UPDATE indents SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                    await client.query(
+                        'UPDATE indents SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
                         ['Completed', order.indent_id]
                     );
                 }
@@ -136,23 +137,27 @@ export class ReceiptsController {
 
             const params: any[] = [];
 
+            let paramIndex = 1;
+
             // Site isolation for Site Engineers
             if (user.role === 'Site Engineer') {
-                query += ` AND i.site_id = ?`;
+                query += ` AND i.site_id = $${paramIndex}`;
                 params.push(user.site_id);
+                paramIndex++;
             }
 
             // Order filter
             if (order_id) {
-                query += ` AND r.order_id = ?`;
+                query += ` AND r.order_id = $${paramIndex}`;
                 params.push(order_id);
+                paramIndex++;
             }
 
             // Add ordering and pagination
-            query += ` ORDER BY r.created_at DESC LIMIT ? OFFSET ?`;
+            query += ` ORDER BY r.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
             params.push(Number(limit), Number(offset));
 
-            const receipts = DatabaseHelper.executeQuery(query, params);
+            const receipts = await DatabaseHelper.executeQuery(query, params);
 
             res.json({ receipts });
 
@@ -168,7 +173,7 @@ export class ReceiptsController {
             const user = req.user!;
 
             // Get receipt with details
-            const receipt = DatabaseHelper.getOne(
+            const receipt = await DatabaseHelper.getOne(
                 `SELECT 
                     r.*,
                     o.order_number,
@@ -182,7 +187,7 @@ export class ReceiptsController {
                 JOIN indents i ON o.indent_id = i.id
                 JOIN sites s ON i.site_id = s.id
                 JOIN users u ON r.received_by = u.id
-                WHERE r.id = ?`,
+                WHERE r.id = $1`,
                 [id]
             );
 
@@ -198,7 +203,7 @@ export class ReceiptsController {
             }
 
             // Get receipt items with material details
-            const items = DatabaseHelper.executeQuery(
+            const items = await DatabaseHelper.executeQuery(
                 `SELECT 
                     ri.*,
                     oi.quantity as ordered_quantity,
@@ -211,13 +216,13 @@ export class ReceiptsController {
                 FROM receipt_items ri
                 JOIN order_items oi ON ri.order_item_id = oi.id
                 JOIN materials m ON oi.material_id = m.id
-                WHERE ri.receipt_id = ?`,
+                WHERE ri.receipt_id = $1`,
                 [id]
             );
 
             // Get receipt images
-            const images = DatabaseHelper.executeQuery(
-                'SELECT * FROM receipt_images WHERE receipt_id = ?',
+            const images = await DatabaseHelper.executeQuery(
+                'SELECT * FROM receipt_images WHERE receipt_id = $1',
                 [id]
             );
 
@@ -251,12 +256,12 @@ export class ReceiptsController {
 
             // Site isolation for Site Engineers
             if (user.role === 'Site Engineer') {
-                siteFilter = ' AND i.site_id = ?';
+                siteFilter = ' AND i.site_id = $1';
                 params.push(user.site_id);
             }
 
             // Get indent statistics
-            const indentStats = DatabaseHelper.executeQuery(
+            const indentStats = await DatabaseHelper.executeQuery(
                 `SELECT 
                     status,
                     COUNT(*) as count
@@ -267,7 +272,7 @@ export class ReceiptsController {
             );
 
             // Get recent activities (last 10 indents)
-            const recentActivities = DatabaseHelper.executeQuery(
+            const recentActivities = await DatabaseHelper.executeQuery(
                 `SELECT 
                     i.id,
                     i.indent_number,

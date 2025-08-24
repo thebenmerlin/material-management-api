@@ -8,6 +8,6 @@ export interface AuthenticatedRequest extends Request {
         full_name: string;
     };
 }
-export declare const authenticateToken: (req: AuthenticatedRequest, res: Response, next: NextFunction) => void;
+export declare const authenticateToken: (req: AuthenticatedRequest, res: Response, next: NextFunction) => Promise<void>;
 export declare const generateToken: (userId: number) => string;
 //# sourceMappingURL=auth.middleware.d.ts.map

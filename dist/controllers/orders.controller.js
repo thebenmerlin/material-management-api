@@ -14,13 +14,13 @@ class OrdersController {
                 return;
             }
             // Check if indent exists and is approved by director
-            const indent = db_1.DatabaseHelper.getOne('SELECT * FROM indents WHERE id = ? AND status = ?', [indent_id, 'Director Approved']);
+            const indent = await db_1.DatabaseHelper.getOne('SELECT * FROM indents WHERE id = $1 AND status = $2', [indent_id, 'Director Approved']);
             if (!indent) {
                 res.status(404).json({ error: 'Indent not found or not approved by director' });
                 return;
             }
             // Check if order already exists for this indent
-            const existingOrder = db_1.DatabaseHelper.getOne('SELECT id FROM orders WHERE indent_id = ?', [indent_id]);
+            const existingOrder = await db_1.DatabaseHelper.getOne('SELECT id FROM orders WHERE indent_id = $1', [indent_id]);
             if (existingOrder) {
                 res.status(400).json({ error: 'Order already exists for this indent' });
                 return;
@@ -32,18 +32,18 @@ class OrdersController {
             for (const item of items) {
                 totalAmount += item.quantity * item.unit_price;
             }
-            db_1.DatabaseHelper.transaction(() => {
+            await db_1.DatabaseHelper.transaction(async (client) => {
                 // Insert order
-                const orderResult = db_1.DatabaseHelper.executeInsert(`INSERT INTO orders (indent_id, order_number, vendor_name, vendor_contact, vendor_address, 
+                const orderResult = await client.query(`INSERT INTO orders (indent_id, order_number, vendor_name, vendor_contact, vendor_address, 
                                        order_date, expected_delivery_date, total_amount, created_by) 
-                     VALUES (?, ?, ?, ?, ?, DATE('now'), ?, ?, ?)`, [indent_id, orderNumber, vendor_name, vendor_contact, vendor_address,
+                     VALUES ($1, $2, $3, $4, $5, CURRENT_DATE, $6, $7, $8) RETURNING id`, [indent_id, orderNumber, vendor_name, vendor_contact, vendor_address,
                     expected_delivery_date, totalAmount, user.id]);
-                const orderId = orderResult.lastInsertRowid;
+                const orderId = orderResult.rows[0].id;
                 // Insert order items
                 for (const item of items) {
                     const totalPrice = item.quantity * item.unit_price;
-                    db_1.DatabaseHelper.executeInsert(`INSERT INTO order_items (order_id, material_id, quantity, unit_price, total_price, specifications) 
-                         VALUES (?, ?, ?, ?, ?, ?)`, [
+                    await client.query(`INSERT INTO order_items (order_id, material_id, quantity, unit_price, total_price, specifications) 
+                         VALUES ($1, $2, $3, $4, $5, $6)`, [
                         orderId,
                         item.material_id,
                         item.quantity,
@@ -74,7 +74,7 @@ class OrdersController {
                 return;
             }
             // Check if order exists
-            const order = db_1.DatabaseHelper.getOne('SELECT * FROM orders WHERE id = ?', [id]);
+            const order = await db_1.DatabaseHelper.getOne('SELECT * FROM orders WHERE id = $1', [id]);
             if (!order) {
                 res.status(404).json({ error: 'Order not found' });
                 return;
@@ -84,19 +84,19 @@ class OrdersController {
             for (const item of items) {
                 totalAmount += item.quantity * item.unit_price;
             }
-            db_1.DatabaseHelper.transaction(() => {
+            await db_1.DatabaseHelper.transaction(async (client) => {
                 // Update order
-                db_1.DatabaseHelper.executeUpdate(`UPDATE orders 
-                     SET vendor_name = ?, vendor_contact = ?, vendor_address = ?, 
-                         expected_delivery_date = ?, total_amount = ?, updated_at = CURRENT_TIMESTAMP 
-                     WHERE id = ?`, [vendor_name, vendor_contact, vendor_address, expected_delivery_date, totalAmount, id]);
+                await client.query(`UPDATE orders 
+                     SET vendor_name = $1, vendor_contact = $2, vendor_address = $3, 
+                         expected_delivery_date = $4, total_amount = $5, updated_at = CURRENT_TIMESTAMP 
+                     WHERE id = $6`, [vendor_name, vendor_contact, vendor_address, expected_delivery_date, totalAmount, id]);
                 // Delete existing order items
-                db_1.DatabaseHelper.executeUpdate('DELETE FROM order_items WHERE order_id = ?', [id]);
+                await client.query('DELETE FROM order_items WHERE order_id = $1', [id]);
                 // Insert updated order items
                 for (const item of items) {
                     const totalPrice = item.quantity * item.unit_price;
-                    db_1.DatabaseHelper.executeInsert(`INSERT INTO order_items (order_id, material_id, quantity, unit_price, total_price, specifications) 
-                         VALUES (?, ?, ?, ?, ?, ?)`, [
+                    await client.query(`INSERT INTO order_items (order_id, material_id, quantity, unit_price, total_price, specifications) 
+                         VALUES ($1, $2, $3, $4, $5, $6)`, [
                         id,
                         item.material_id,
                         item.quantity,
@@ -131,20 +131,23 @@ class OrdersController {
                 WHERE 1=1
             `;
             const params = [];
+            let paramIndex = 1;
             // Site isolation for Site Engineers
             if (user.role === 'Site Engineer') {
-                query += ` AND i.site_id = ?`;
+                query += ` AND i.site_id = $${paramIndex}`;
                 params.push(user.site_id);
+                paramIndex++;
             }
             // Status filter
             if (status) {
-                query += ` AND o.status = ?`;
+                query += ` AND o.status = $${paramIndex}`;
                 params.push(status);
+                paramIndex++;
             }
             // Add ordering and pagination
-            query += ` ORDER BY o.created_at DESC LIMIT ? OFFSET ?`;
+            query += ` ORDER BY o.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
             params.push(Number(limit), Number(offset));
-            const orders = db_1.DatabaseHelper.executeQuery(query, params);
+            const orders = await db_1.DatabaseHelper.executeQuery(query, params);
             // Hide pricing information for Site Engineers
             const filteredOrders = orders.map((order) => {
                 if (user.role === 'Site Engineer') {
@@ -165,7 +168,7 @@ class OrdersController {
             const { id } = req.params;
             const user = req.user;
             // Get order with details
-            const order = db_1.DatabaseHelper.getOne(`SELECT 
+            const order = await db_1.DatabaseHelper.getOne(`SELECT 
                     o.*,
                     i.indent_number,
                     i.site_id,
@@ -176,7 +179,7 @@ class OrdersController {
                 JOIN indents i ON o.indent_id = i.id
                 JOIN sites s ON i.site_id = s.id
                 JOIN users u ON o.created_by = u.id
-                WHERE o.id = ?`, [id]);
+                WHERE o.id = $1`, [id]);
             if (!order) {
                 res.status(404).json({ error: 'Order not found' });
                 return;
@@ -187,7 +190,7 @@ class OrdersController {
                 return;
             }
             // Get order items
-            const items = db_1.DatabaseHelper.executeQuery(`SELECT 
+            const items = await db_1.DatabaseHelper.executeQuery(`SELECT 
                     oi.*,
                     m.material_name,
                     m.material_code,
@@ -195,7 +198,7 @@ class OrdersController {
                     m.category
                 FROM order_items oi
                 JOIN materials m ON oi.material_id = m.id
-                WHERE oi.order_id = ?`, [id]);
+                WHERE oi.order_id = $1`, [id]);
             // Parse specifications and filter pricing for Site Engineers
             const itemsWithSpecs = items.map((item) => {
                 const processedItem = {

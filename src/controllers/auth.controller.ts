@@ -8,10 +8,10 @@ export class AuthController {
         try {
             const { username, password, site_code } = req.body;
 
-            // Find user by username
-            let user = DatabaseHelper.getOne(
-                'SELECT u.*, s.site_code, s.site_name FROM users u LEFT JOIN sites s ON u.site_id = s.id WHERE u.username = ? AND u.is_active = 1',
-                [username]
+            // Find user by username (PostgreSQL uses $1, $2, etc. for parameters)
+            const user = await DatabaseHelper.getOne(
+                'SELECT u.*, s.site_code, s.site_name FROM users u LEFT JOIN sites s ON u.site_id = s.id WHERE u.username = $1 AND u.is_active = $2',
+                [username, true]
             );
 
             if (!user) {

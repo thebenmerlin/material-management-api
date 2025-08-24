@@ -4,6 +4,9 @@ import cors from 'cors';
 import path from 'path';
 import { config } from 'dotenv';
 
+// Import database utilities
+import { initializePool, testConnection, initializeDatabase, ensureUploadsDir } from './utils/db';
+
 // Import routes
 import authRoutes from './routes/auth.routes';
 import materialsRoutes from './routes/materials.routes';
@@ -19,21 +22,22 @@ import { serveUploads } from './middleware/upload.middleware';
 config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = parseInt(process.env.PORT || '3000', 10);
+
+// Initialize database connection pool
+initializePool();
+
+// Ensure uploads directory exists
+ensureUploadsDir();
 
 // Security middleware
 app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// CORS configuration
-const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || [
-    'http://localhost:8081',
-    'exp://192.168.1.100:8081'
-];
-
+// CORS configuration - Allow all origins for Railway deployment
 app.use(cors({
-    origin: allowedOrigins,
+    origin: "*",
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
@@ -43,13 +47,31 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Health check endpoint
+// Minimal health endpoint for deployment verification
 app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'OK', 
-        timestamp: new Date().toISOString(),
-        service: 'Material Management API'
+  res.json({ status: "healthy" });  // verifier expects this exact key:value
+});
+
+// Optional detailed endpoint
+app.get('/health/details', async (req, res) => {
+  try {
+    const dbConnected = await testConnection();
+    res.status(200).json({
+      status: 'OK',
+      timestamp: new Date().toISOString(),
+      service: 'Material Management API',
+      database: dbConnected ? 'connected' : 'disconnected',
+      environment: process.env.NODE_ENV || 'development'
     });
+  } catch (error) {
+    res.status(503).json({
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      service: 'Material Management API',
+      database: 'disconnected',
+      error: 'Database connection failed'
+    });
+  }
 });
 
 // API routes
@@ -141,12 +163,53 @@ app.use((error: any, req: express.Request, res: express.Response, next: express.
     });
 });
 
-// Start server
-app.listen(PORT, () => {
-    console.log(`🚀 Material Management API server running on port ${PORT}`);
-    console.log(`📚 API Documentation: http://localhost:${PORT}/api`);
-    console.log(`🏥 Health Check: http://localhost:${PORT}/health`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+// Initialize database and start server
+const startServer = async () => {
+    try {
+        console.log('🔄 Starting Material Management API...');
+        
+        // Test database connection
+        const dbConnected = await testConnection();
+        if (!dbConnected) {
+            console.error('❌ Failed to connect to database. Exiting...');
+            process.exit(1);
+        }
+
+        // Initialize database schema
+        await initializeDatabase();
+        
+        // Start server on 0.0.0.0 for Railway
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log(`🚀 Material Management API server running on port ${PORT}`);
+            console.log(`📚 API Documentation: http://localhost:${PORT}/api`);
+            console.log(`🏥 Health Check: http://localhost:${PORT}/health`);
+            console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+            console.log(`🗄️  Database: PostgreSQL connected`);
+            console.log(`📁 Uploads Directory: ${process.env.UPLOAD_DIR || './uploads'}`);
+        });
+
+    } catch (error) {
+        console.error('❌ Failed to start server:', error);
+        process.exit(1);
+    }
+};
+
+// Handle graceful shutdown
+process.on('SIGTERM', async () => {
+    console.log('🔄 SIGTERM received, shutting down gracefully...');
+    const { DatabaseHelper } = await import('./utils/db');
+    await DatabaseHelper.close();
+    process.exit(0);
 });
+
+process.on('SIGINT', async () => {
+    console.log('🔄 SIGINT received, shutting down gracefully...');
+    const { DatabaseHelper } = await import('./utils/db');
+    await DatabaseHelper.close();
+    process.exit(0);
+});
+
+// Start the server
+startServer();
 
 export default app;

@@ -31,24 +31,24 @@ export class IndentsController {
                 }
             }
 
-            DatabaseHelper.transaction(() => {
+            await DatabaseHelper.transaction(async (client) => {
                 // Insert indent
-                const indentResult = DatabaseHelper.executeInsert(
+                const indentResult = await client.query(
                     `INSERT INTO indents (indent_number, site_id, created_by, total_estimated_cost) 
-                     VALUES (?, ?, ?, ?)`,
+                     VALUES ($1, $2, $3, $4) RETURNING id`,
                     [indentNumber, user.site_id, user.id, totalEstimatedCost]
                 );
 
-                const indentId = indentResult.lastInsertRowid;
+                const indentId = indentResult.rows[0].id;
 
                 // Insert indent items
                 for (const item of items) {
                     const estimatedTotalCost = item.estimated_unit_cost ? 
                         item.quantity * item.estimated_unit_cost : null;
 
-                    DatabaseHelper.executeInsert(
+                    await client.query(
                         `INSERT INTO indent_items (indent_id, material_id, quantity, specifications, estimated_unit_cost, estimated_total_cost) 
-                         VALUES (?, ?, ?, ?, ?, ?)`,
+                         VALUES ($1, $2, $3, $4, $5, $6)`,
                         [
                             indentId,
                             item.material_id,
@@ -101,23 +101,27 @@ export class IndentsController {
 
             const params: any[] = [];
 
+            let paramIndex = 1;
+
             // Site isolation for Site Engineers
             if (user.role === 'Site Engineer') {
-                query += ` AND i.site_id = ?`;
+                query += ` AND i.site_id = $${paramIndex}`;
                 params.push(user.site_id);
+                paramIndex++;
             }
 
             // Status filter
             if (status) {
-                query += ` AND i.status = ?`;
+                query += ` AND i.status = $${paramIndex}`;
                 params.push(status);
+                paramIndex++;
             }
 
             // Add ordering and pagination
-            query += ` ORDER BY i.created_at DESC LIMIT ? OFFSET ?`;
+            query += ` ORDER BY i.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
             params.push(Number(limit), Number(offset));
 
-            const indents = DatabaseHelper.executeQuery(query, params);
+            const indents = await DatabaseHelper.executeQuery(query, params);
 
             res.json({ indents });
 
@@ -133,7 +137,7 @@ export class IndentsController {
             const user = req.user!;
 
             // Get indent with details
-            const indent = DatabaseHelper.getOne(
+            const indent = await DatabaseHelper.getOne(
                 `SELECT 
                     i.*,
                     s.site_name,
@@ -146,7 +150,7 @@ export class IndentsController {
                 JOIN users u ON i.created_by = u.id
                 LEFT JOIN users pu ON i.purchase_approved_by = pu.id
                 LEFT JOIN users du ON i.director_approved_by = du.id
-                WHERE i.id = ?`,
+                WHERE i.id = $1`,
                 [id]
             );
 
@@ -162,7 +166,7 @@ export class IndentsController {
             }
 
             // Get indent items
-            const items = DatabaseHelper.executeQuery(
+            const items = await DatabaseHelper.executeQuery(
                 `SELECT 
                     ii.*,
                     m.material_name,
@@ -171,7 +175,7 @@ export class IndentsController {
                     m.category
                 FROM indent_items ii
                 JOIN materials m ON ii.material_id = m.id
-                WHERE ii.indent_id = ?`,
+                WHERE ii.indent_id = $1`,
                 [id]
             );
 
@@ -199,8 +203,8 @@ export class IndentsController {
             const user = req.user!;
 
             // Get current indent
-            const indent = DatabaseHelper.getOne(
-                'SELECT * FROM indents WHERE id = ?',
+            const indent = await DatabaseHelper.getOne(
+                'SELECT * FROM indents WHERE id = $1',
                 [id]
             );
 
@@ -223,8 +227,8 @@ export class IndentsController {
                 newStatus = 'Rejected';
                 updateQuery = `
                     UPDATE indents 
-                    SET status = ?, rejection_reason = ?, updated_at = CURRENT_TIMESTAMP 
-                    WHERE id = ?
+                    SET status = $1, rejection_reason = $2, updated_at = CURRENT_TIMESTAMP 
+                    WHERE id = $3
                 `;
                 updateParams = [newStatus, rejection_reason, id];
             } else if (action === 'approve') {
@@ -232,16 +236,16 @@ export class IndentsController {
                     newStatus = 'Purchase Approved';
                     updateQuery = `
                         UPDATE indents 
-                        SET status = ?, purchase_approved_by = ?, purchase_approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
-                        WHERE id = ?
+                        SET status = $1, purchase_approved_by = $2, purchase_approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
+                        WHERE id = $3
                     `;
                     updateParams = [newStatus, user.id, id];
                 } else if (user.role === 'Director' && indent.status === 'Purchase Approved') {
                     newStatus = 'Director Approved';
                     updateQuery = `
                         UPDATE indents 
-                        SET status = ?, director_approved_by = ?, director_approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
-                        WHERE id = ?
+                        SET status = $1, director_approved_by = $2, director_approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
+                        WHERE id = $3
                     `;
                     updateParams = [newStatus, user.id, id];
                 } else {
@@ -253,7 +257,7 @@ export class IndentsController {
                 return;
             }
 
-            DatabaseHelper.executeUpdate(updateQuery, updateParams);
+            await DatabaseHelper.executeUpdate(updateQuery, updateParams);
 
             res.json({
                 message: `Indent ${action}d successfully`,

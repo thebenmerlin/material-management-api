@@ -12,7 +12,7 @@ export interface AuthenticatedRequest extends Request {
     };
 }
 
-export const authenticateToken = (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+export const authenticateToken = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
@@ -26,8 +26,8 @@ export const authenticateToken = (req: AuthenticatedRequest, res: Response, next
         const decoded = jwt.verify(token, JWT_SECRET) as any;
 
         // Fetch fresh user data from database
-        const user = DatabaseHelper.getOne(
-            'SELECT id, username, role, site_id, full_name, is_active FROM users WHERE id = ?',
+        const user = await DatabaseHelper.getOne(
+            'SELECT id, username, role, site_id, full_name, is_active FROM users WHERE id = $1',
             [decoded.userId]
         );
 

@@ -22,11 +22,11 @@ class ReportsController {
             const params = [startDate, endDate];
             // Site filter
             if (site_id) {
-                siteFilter = ' AND i.site_id = ?';
+                siteFilter = ' AND i.site_id = $3';
                 params.push(site_id);
             }
             // Get monthly indent data
-            const indentData = db_1.DatabaseHelper.executeQuery(`SELECT 
+            const indentData = await db_1.DatabaseHelper.executeQuery(`SELECT 
                     i.id,
                     i.indent_number,
                     i.status,
@@ -42,10 +42,10 @@ class ReportsController {
                 JOIN sites s ON i.site_id = s.id
                 JOIN users u ON i.created_by = u.id
                 LEFT JOIN orders o ON i.id = o.indent_id
-                WHERE DATE(i.created_at) BETWEEN ? AND ? ${siteFilter}
+                WHERE i.created_at::date BETWEEN $1::date AND $2::date ${siteFilter}
                 ORDER BY i.created_at DESC`, params);
             // Get material-wise summary
-            const materialSummary = db_1.DatabaseHelper.executeQuery(`SELECT 
+            const materialSummary = await db_1.DatabaseHelper.executeQuery(`SELECT 
                     m.material_name,
                     m.category,
                     SUM(ii.quantity) as total_quantity,
@@ -57,7 +57,7 @@ class ReportsController {
                 JOIN materials m ON ii.material_id = m.id
                 LEFT JOIN order_items oi ON m.id = oi.material_id
                 LEFT JOIN orders o ON oi.order_id = o.id AND o.indent_id = i.id
-                WHERE DATE(i.created_at) BETWEEN ? AND ? ${siteFilter}
+                WHERE i.created_at::date BETWEEN $1::date AND $2::date ${siteFilter}
                 GROUP BY m.id, m.material_name, m.category, m.unit
                 ORDER BY total_cost DESC`, params);
             // Create Excel workbook
@@ -175,11 +175,11 @@ class ReportsController {
             let siteFilter = '';
             const params = [startDate, endDate];
             if (site_id) {
-                siteFilter = ' AND i.site_id = ?';
+                siteFilter = ' AND i.site_id = $3';
                 params.push(site_id);
             }
             // Get summary statistics
-            const stats = db_1.DatabaseHelper.getOne(`SELECT 
+            const stats = await db_1.DatabaseHelper.getOne(`SELECT 
                     COUNT(*) as total_indents,
                     COUNT(CASE WHEN i.status = 'Completed' THEN 1 END) as completed_indents,
                     COUNT(CASE WHEN i.status = 'Pending' THEN 1 END) as pending_indents,
@@ -188,17 +188,17 @@ class ReportsController {
                     SUM(o.total_amount) as total_actual_cost
                 FROM indents i
                 LEFT JOIN orders o ON i.id = o.indent_id
-                WHERE DATE(i.created_at) BETWEEN ? AND ? ${siteFilter}`, params);
+                WHERE i.created_at::date BETWEEN $1::date AND $2::date ${siteFilter}`, params);
             // Get status breakdown
-            const statusBreakdown = db_1.DatabaseHelper.executeQuery(`SELECT 
+            const statusBreakdown = await db_1.DatabaseHelper.executeQuery(`SELECT 
                     status,
                     COUNT(*) as count,
                     SUM(total_estimated_cost) as total_cost
                 FROM indents i
-                WHERE DATE(i.created_at) BETWEEN ? AND ? ${siteFilter}
+                WHERE i.created_at::date BETWEEN $1::date AND $2::date ${siteFilter}
                 GROUP BY status`, params);
             // Get top materials by cost
-            const topMaterials = db_1.DatabaseHelper.executeQuery(`SELECT 
+            const topMaterials = await db_1.DatabaseHelper.executeQuery(`SELECT 
                     m.material_name,
                     m.category,
                     SUM(ii.quantity) as total_quantity,
@@ -209,9 +209,9 @@ class ReportsController {
                 JOIN materials m ON ii.material_id = m.id
                 LEFT JOIN order_items oi ON m.id = oi.material_id
                 LEFT JOIN orders o ON oi.order_id = o.id AND o.indent_id = i.id
-                WHERE DATE(i.created_at) BETWEEN ? AND ? ${siteFilter}
+                WHERE i.created_at::date BETWEEN $1::date AND $2::date ${siteFilter}
                 GROUP BY m.id, m.material_name, m.category, m.unit
-                HAVING total_cost > 0
+                HAVING SUM(oi.total_price) > 0
                 ORDER BY total_cost DESC
                 LIMIT 10`, params);
             res.json({
