@@ -1,46 +1,61 @@
 import { Router } from 'express';
-import { MaterialsController } from '../controllers/materials.controller';
-import { authenticateToken } from '../middleware/auth.middleware';
-import { requireAnyRole } from '../middleware/role.middleware';
-import { validateQuery, materialSearchSchema } from '../utils/validation';
+import { MaterialModel } from '../models/material.model';
 
 const router = Router();
 
 /**
  * @route GET /api/materials
- * @desc Get materials catalog with search and filtering
- * @access Private (All roles)
+ * @desc Get all materials
  */
-router.get(
-    '/',
-    authenticateToken,
-    requireAnyRole,
-    validateQuery(materialSearchSchema),
-    MaterialsController.getMaterials
-);
+router.get('/', async (req, res) => {
+  try {
+    const materials = await MaterialModel.findAll();
+    res.json({
+      materials,
+      pagination: {
+        total: materials.length,
+        limit: 50,
+        offset: 0,
+        hasMore: false
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching materials:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
 /**
- * @route GET /api/materials/categories
- * @desc Get all material categories
- * @access Private (All roles)
+ * @route POST /api/materials
+ * @desc Add a new material
  */
-router.get(
-    '/categories',
-    authenticateToken,
-    requireAnyRole,
-    MaterialsController.getCategories
-);
+router.post('/', async (req, res) => {
+  try {
+    const { material_code, material_name, category, unit, specifications, description } = req.body;
 
-/**
- * @route GET /api/materials/:id
- * @desc Get material by ID
- * @access Private (All roles)
- */
-router.get(
-    '/:id',
-    authenticateToken,
-    requireAnyRole,
-    MaterialsController.getMaterialById
-);
+    // Simple validation
+    if (!material_code || !material_name) {
+      return res.status(400).json({ error: 'material_code and material_name are required' });
+    }
+
+    // Create new record
+    const newMaterial = await MaterialModel.create({
+      material_code,
+      material_name,
+      category,
+      unit,
+      specifications: specifications || {},
+      description
+    });
+
+    res.status(201).json({
+      message: 'Material created successfully',
+      material: newMaterial
+    });
+  } catch (err) {
+    console.error('Error creating material:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
 export default router;
