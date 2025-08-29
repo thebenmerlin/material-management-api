@@ -47,29 +47,23 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Minimal health endpoint for deployment verification
-app.get('/health', (req, res) => {
-  res.json({ status: "healthy" });  // verifier expects this exact key:value
-});
-
-// Optional detailed endpoint
-app.get('/health/details', async (req, res) => {
+//Health edit
+app.get('/health', async (req, res) => {
   try {
-    const dbConnected = await testConnection();
+    const result = await dbQuery('SELECT NOW() as current_time');
+
     res.status(200).json({
-      status: 'OK',
-      timestamp: new Date().toISOString(),
+      status: 'healthy',
+      database: 'connected',
       service: 'Material Management API',
-      database: dbConnected ? 'connected' : 'disconnected',
-      environment: process.env.NODE_ENV || 'development'
+      timestamp: new Date().toISOString()
     });
-  } catch (error) {
+  } catch (err) {
     res.status(503).json({
       status: 'unhealthy',
-      timestamp: new Date().toISOString(),
-      service: 'Material Management API',
       database: 'disconnected',
-      error: 'Database connection failed'
+      service: 'Material Management API',
+      error: err.message
     });
   }
 });
