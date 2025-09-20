@@ -1,9 +1,8 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
-import { AuthController } from '../controllers/auth.controller';
 import { validate, loginSchema } from '../utils/validation';
-import { UserModel } from '../models/user.model'; // adjust path if needed
-import { generateJwtForUser } from '../utils/jwt'; // adjust path if needed
+import { UserModel } from '../models/user.model';
+import { generateJwtForUser } from '../utils/jwt';
 
 const router = Router();
 
@@ -13,44 +12,41 @@ const router = Router();
  * @access Public
  */
 router.post('/login', validate(loginSchema), async (req, res) => {
-  const { username, password } = req.body;
+  const { username, email, password } = req.body;
 
   try {
-    // Find user by username
-    const user = await UserModel.findOne({ where: { username } });
+    // Find user by username OR email
+    const user = await UserModel.findOne({
+      where: username ? { username } : { email }
+    });
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Compare password with stored hash
+    // Compare password
     const validPassword = await bcrypt.compare(password, user.password_hash);
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Generate JWT token
+    // Generate JWT
     const token = generateJwtForUser(user);
 
-    return res.json({ token });
+    return res.json({
+      message: 'Login successful',
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+      }
+    });
   } catch (err) {
     console.error('Login error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 });
-
-/**
- * @route POST /api/auth/refresh
- * @desc Refresh JWT token
- * @access Public
- */
-router.post('/refresh', AuthController.refreshToken);
-
-/**
- * @route POST /api/auth/logout
- * @desc Logout user (client-side token removal)
- * @access Public
- */
-router.post('/logout', AuthController.logout);
 
 export default router;
